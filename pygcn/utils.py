@@ -1,6 +1,16 @@
 import numpy as np
 import scipy.sparse as sp
 import torch
+import networkx as nx
+from networkx.readwrite import json_graph
+from networkx.linalg.laplacianmatrix import laplacian_matrix
+from scipy.io import mmwrite
+from scipy.sparse import csr_matrix, diags, identity
+import scipy.sparse as sp
+import process
+import json
+import sys
+import pickle as pkl
 
 
 def encode_onehot(labels):
@@ -78,3 +88,71 @@ def sparse_mx_to_torch_sparse_tensor(sparse_mx):
     values = torch.from_numpy(sparse_mx.data)
     shape = torch.Size(sparse_mx.shape)
     return torch.sparse.FloatTensor(indices, values, shape)
+
+def json2mtx(dataset):
+    G_data    = json.load(open("/home/xl289/CS6241_proj/dataset/{}/{}-G.json".format(dataset, dataset)))
+    G         = json_graph.node_link_graph(G_data)
+    laplacian = laplacian_matrix(G)
+    file = open("/home/xl289/CS6241_proj/dataset/{}/{}.mtx".format(dataset, dataset), "wb")
+    mmwrite("/home/xl289/CS6241_proj/dataset/{}/{}.mtx".format(dataset, dataset), laplacian)
+    file.close()
+
+    return laplacian
+
+def parse_index_file(filename):
+    """Parse index file."""
+    index = []
+    for line in open(filename):
+        index.append(int(line.strip()))
+    return index
+
+def load_data_graphzoom():
+    dataset = dataset_str = 'cora'
+    names = ['x', 'y', 'tx', 'ty', 'allx', 'ally', 'graph']
+    objects = []
+    for i in range(len(names)):
+        with open("/home/xl289/CS6241_proj/raw_data/ind.{}.{}".format('cora', names[i]), 'rb') as f:
+            if sys.version_info > (3, 0):
+                objects.append(pkl.load(f, encoding='latin1'))
+            else:
+                objects.append(pkl.load(f))
+
+    x, y, tx, ty, allx, ally, graph = tuple(objects)
+
+    test_idx_reorder = parse_index_file("/home/xl289/CS6241_proj/raw_data/ind.{}.test.index".format(dataset_str))
+    test_idx_range = np.sort(test_idx_reorder)
+
+    laplacian = json2mtx(dataset)
+    adjacency = diags(laplacian.diagonal(), 0) - laplacian
+    G = nx.from_scipy_sparse_matrix(adjacency, edge_attribute='wgt')
+    adj = nx.to_scipy_sparse_matrix(G, weight='wgt')
+
+    # adj = nx.adjacency_matrix(nx.from_dict_of_lists(graph))
+    
+    adj = process.normalize_adj(adj + sp.eye(adj.shape[0]))
+    adj = process.sparse_mx_to_torch_sparse_tensor(adj)
+
+    features = np.load("/home/xl289/CS6241_proj/dataset/cora/cora-feats.npy")
+    # features = sp.vstack((allx, tx)).tolil()
+    # features[test_idx_reorder, :] = features[test_idx_range, :]
+    # features = features.toarray()
+
+    features = sp.csr_matrix(np.matrix(features))
+    features = normalize(features)
+    features = torch.FloatTensor(np.array(features.todense()))
+
+    labels = np.vstack((ally, ty))
+    labels[test_idx_reorder, :] = labels[test_idx_range, :]
+
+    int_labels = [
+        (int(np.where(r == 1)[0][0]) if len(np.where(r==1)[0]) > 0 else -1)
+        for r in labels]
+    labels = torch.LongTensor(int_labels)
+
+    idx_train = range(140)
+    idx_val = range(200, 500)
+    idx_test = range(500, 2000)
+
+    return adj, features, labels, idx_train, idx_val, idx_test
+
+
